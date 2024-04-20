@@ -1,18 +1,13 @@
-#!/usr/bin/env python3
-import ipaddress
 import logging
-import psutil
-import random
 import select
 import socket
 import struct
-import subprocess
 import sys
 
 from socketserver import ThreadingMixIn, TCPServer, StreamRequestHandler
 from typing import Callable, Literal
 
-logging.basicConfig(level=logging.DEBUG)
+from soxprox.pool import Ipv6AddressProxyPool
 
 # Constants
 BIND_PORT = 0  # set to 0 if we are binding an address, lets the kernel decide a free port
@@ -59,118 +54,8 @@ class StatusCode:
     AddressTypeNotSupported = 8
 
 
-class Ipv6AddressProxyPool:
-    INTERFACE = 'eth0'
-
-    def __init__(self, n_ips: int = 8):
-        self.__default_address_int = 0
-        self.__hostmask_int = 0
-        self.__logger = logging.getLogger(__name__)
-        self.__n_ips = n_ips
-
-    def __enter__(self) -> 'Ipv6AddressProxyPool':
-        try:
-            default_ip_masked = sorted(
-                self.find_ipv6_addresses(True),
-                key=lambda address: int(ipaddress.IPv6Address(address.split('/')[0]))
-            )[0]  # Assume lowest IPv6 address is the default ip
-            default_ip = default_ip_masked.split('/')[0]
-        except IndexError:
-            raise RuntimeError('No IPv6 address found.')
-
-        default_ip_address = ipaddress.IPv6Address(default_ip)
-        public_network = ipaddress.IPv6Network(default_ip_masked, strict=False)
-        if public_network.network_address > default_ip_address:
-            raise RuntimeError(
-                'Public network address {} is higher than default ip address. {}'.format(
-                    str(public_network.network_address),
-                    default_ip))
-
-        self.__default_address_int = int(default_ip_address)
-        self.__hostmask_int = int(public_network.hostmask)
-        self.addresses = []
-        for _ in range(self.__n_ips):
-            self.addresses.append(self.create_ipv6_address())
-
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.shutdown()
-
-    def create_ipv6_address(self) -> str:
-        """Create a new IPv6 address."""
-        ipv6_address = str(ipaddress.IPv6Address(random.randint(
-            self.__default_address_int + 1,
-            self.__default_address_int + self.__hostmask_int - 1
-        )))
-
-        # create IPv6 address
-        result = subprocess.run(
-            ['sudo', 'ip', '-6', 'addr', 'add', str(ipv6_address), 'dev', self.INTERFACE],
-            capture_output=True,
-            text=True
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(f'Failed to create IPv6 address: {result.stdout}\n{result.stderr}')
-
-        return ipv6_address
-
-    def get_random_ipv6_address(self) -> str:
-        """Get a random IPv6 address from the pool."""
-        return random.choice(self.addresses)
-
-    def find_ipv6_addresses(self, append_mask: bool = False) -> list[str]:
-        """Find all IPv6 addresses on the interface.
-
-        Given all IPv6 addresses on the interface specified in self.INTERFACE,
-        (eth0 by default) return a list of public IPv6 addresses on that interface.
-
-        Args:
-            append_mask (bool, optional): If True, will append the CIDR bitmask. [default: False]
-
-        Returns:
-            list[str]: List of public IPv6 addresses on the interface.
-        """
-        return [
-            (f'{address}/{self.__netmask_to_cidr(str(snic.netmask))}'
-             if (address := snic.address.replace(f'%{self.INTERFACE}', ''))
-             and append_mask
-             else address)
-            for snic in (psutil.net_if_addrs().get(self.INTERFACE) or [])
-            if snic.family == socket.AF_INET6
-            and ipaddress.IPv6Address(snic.address).is_global
-        ]
-
-    def shutdown(self) -> None:
-        """Remove all ipv6 addresses."""
-        for address in self.find_ipv6_addresses():
-            if int(ipaddress.IPv6Address(address)) == self.__default_address_int:
-                continue  # DON'T remove the origin public IPv6 address
-
-            result = subprocess.run(
-                ['sudo', 'ip', '-6', 'addr', 'del', address, 'dev', self.INTERFACE],
-                capture_output=True,
-                text=True
-            )
-
-            if result.returncode != 0:
-                self.__logger.error(
-                    f'Failed to remove IPv6 address: {result.stdout}\n{result.stderr}')
-
-    def __netmask_to_cidr(self, netmask: str) -> int:
-        """Convert psutil.net_if_addrs().netmask to CIDR notation."""
-        HEX_BASE = 16
-
-        # Convert the netmask to binary string
-        binary = bin(int(netmask.replace(':', ''), HEX_BASE))
-
-        # Count the number of 1 bits
-        return binary.count('1')
-
-
-class ThreadingTCPServer(ThreadingMixIn, TCPServer):
-    """Just the server which will process a dictionary of options and initialise the socket server"""
+class SOCKS5Proxy(ThreadingMixIn, TCPServer):
+    """Just the server which will process a dictionary of options and initialise the socket server."""
     address_family = socket.AF_INET6
     allow_reuse_address = True
 
@@ -315,16 +200,17 @@ class ProxyRequestHandler(StreamRequestHandler):
 
         af, socktype, proto, _, sa = remote_info
 
-        # assert isinstance(self.proxy_pool, Ipv6AddressProxyPool)
-        # ipv6_address = self.proxy_pool.get_random_ipv6_address()
+        assert isinstance(self.proxy_pool, Ipv6AddressProxyPool)
+        ipv6_address = self.proxy_pool.get_random_address()
 
         # Connect to the socket
         try:
             # Make the socket
             self._remote = socket.socket(af, socktype, proto)
+            self._remote.bind((ipv6_address, port))
             # Bind it to an IP
-            if hasattr(self.server, '_bind'):
-                self._remote.bind(self.server._bind)  # type: ignore
+            # if hasattr(self.server, '_bind'):
+            #     self._remote.bind(self.server._bind)  # type: ignore
             self._remote.connect(sa)
             bind_address = self._remote.getsockname()
             logging.info(f'Connected to {address} {port}')
@@ -445,7 +331,7 @@ class ProxyRequestHandler(StreamRequestHandler):
                     return
 
     def _exit(self, dontExit=False):
-        """Convenience method to exit the thread and cleanup any connections"""
+        """Exit the thread and cleanup any connections."""
         self._shutdown_client()
         if hasattr(self, "_remote"):
             # self._remote.shutdown(socket.SHUT_RDWR)
@@ -461,7 +347,7 @@ class ProxyRequestHandler(StreamRequestHandler):
         code: int | Literal[False] = False
     ):
         """
-        Convenience method to receive bytes from a client.
+        Receive bytes from a client.
 
         If bufsize is less than the size of the data received, then 
         failure_method is called with code as a parameter and kills the thread.
@@ -478,33 +364,34 @@ class ProxyRequestHandler(StreamRequestHandler):
         return buf
 
     def _send(self, data):
-        """Convenience method to send bytes to a client"""
+        """Send bytes to a client"""
         return self.request.sendall(data)
 
     def _send_authentication_failure(self, code):
-        """Convinence method to send a failure message to a client in the authentication stage"""
+        """Send a failure message to a client in the authentication stage"""
         self._send(struct.pack("!BB", USERNAME_PASSWORD_VERSION, code))
         self._exit()
 
     def _send_failure(self, code):
-        """Convinence method to send a failure message to a client in the socket stage"""
+        """Send a failure message to a client in the socket stage"""
         address_type = self._address_type if hasattr(
             self, "_address_type") else AddressDataType.IPv4
         self._send(struct.pack("!BBBBIH", SOCKS_VERSION, code, RESERVED, address_type, 0, 0))
         self._exit()
 
     def _send_greeting_failure(self, code):
-        """Convinence method to send a failure message to a client in the greeting stage"""
+        """Send a failure message to a client in the greeting stage"""
         self._send(struct.pack("!BB", SOCKS_VERSION, code))
         self._exit()
 
     def _shutdown_client(self):
-        """Convenience method to shutdown and close the connection with a client"""
+        """Shutdown and close the connection with a client"""
         self.server.shutdown_request(self.request)
 
     def _verify_credentials(self):
-        """Verify the credentials of a client and send a response relevant response
-            and possibly close the connection + thread if unauthenticated
+        """
+        Verify the credentials of a client and send a response relevant response.
+        Close the connection & thread if unauthenticated.
         """
         version = ord(self._recv(VERSION_SIZE))
         if version != USERNAME_PASSWORD_VERSION:
@@ -525,95 +412,3 @@ class ProxyRequestHandler(StreamRequestHandler):
 
         logging.error(f'Authentication failed')
         self._send_authentication_failure(FAILURE)
-
-
-"""
-@see: https://github.com/itsjfx/python-socks5-server
-@see: https://rushter.com/blog/python-socks-server/
-@see: https://github.com/rushter/socks5
-@see: https://docs.python.org/3/library/socket.html#socket.getaddrinfo
-@see: https://docs.python.org/3/library/socket.html#socket-objects
-@see: https://docs.python.org/3/library/socketserver.html
-@see: https://tools.ietf.org/html/rfc1928
-@see: maybe https://github.com/heiher/hev-socks5-tproxy ? 
-@see: maybe https://www.edopedia.com/blog/building-a-python-based-secure-web-proxy-server-with-socks5/ ?
-"""
-if __name__ == '__main__':
-    with Ipv6AddressProxyPool() as proxy_pool:
-        ProxyRequestHandler.proxy_pool = proxy_pool
-        with ThreadingTCPServer(('2a01:4ff:1f0:c596::2', 1081)) as server:
-            server.serve_forever()
-
-
-# import threading
-
-# from socketserver import BaseServer, ThreadingMixIn, TCPServer, StreamRequestHandler
-
-# class Socks5Proxy(threading.Thread):
-#     def __init__(self, host='::1', port=1080):
-#         super().__init__()
-#         self.running = True
-#         self.address = (host, port)
-#         self.init_socket()
-
-#     def init_socket(self):
-#         self.server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-#         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-#         self.server.bind(self.address)
-#         self.server.listen(5)
-
-#     def run(self):
-#         print(f'Starting SOCKS5 proxy server on {self.address[0]}:{self.address[1]}')
-#         try:
-#             while self.running:
-#                 readable, _, _ = select.select([self.server], [], [], 1)
-#                 if readable:
-#                     client_socket, client_address = self.server.accept()
-#                     print(f'Accepted connection from {client_address}')
-#                     client_handler = threading.Thread(target=self.handle_client, args=(client_socket,))
-#                     client_handler.start()
-#         finally:
-#             self.server.close()
-
-#     def handle_client(self, client_socket):
-#         # Receive the client's request
-#         request = client_socket.recv(4096)
-
-#         # Parse the request to extract the destination address and port
-#         # For simplicity, let's assume the request is in the form of 'address:port'
-#         destination_address, destination_port = request.decode().split(':')
-
-#         # Determine if the address is IPv4 or IPv6
-#         address_family = socket.AF_INET if '.' in destination_address else socket.AF_INET6
-
-#         # Create a socket for the remote connection
-#         remote_socket = socket.socket(address_family, socket.SOCK_STREAM)
-
-#         # Connect to the destination
-#         remote_socket.connect((destination_address, int(destination_port)))
-
-#         # Forward the client's request to the destination
-#         remote_socket.sendall(request)
-
-#         # Receive the response from the destination
-#         response = remote_socket.recv(4096)
-
-#         # Send the response back to the client
-#         client_socket.sendall(response)
-
-#         # Close the remote connection
-#         remote_socket.close()
-
-
-#     def stop(self):
-#         self.running = False
-
-# if __name__ == '__main__':
-#    proxy = Socks5Proxy()
-#    proxy.start()
-#    try:
-#        while True:
-#            pass
-#    except KeyboardInterrupt:
-#        print('Stopping proxy server...')
-#        proxy.stop()
