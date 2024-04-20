@@ -95,7 +95,9 @@ class SOCKS5Proxy(ThreadingMixIn, TCPServer):
 class ProxyRequestHandler(StreamRequestHandler):
     username = 'username'
     password = 'password'
-    proxy_pool: Ipv6AddressProxyPool | None = None
+
+    logger: logging.Logger
+    proxy_pool: Ipv6AddressProxyPool
 
     def handle(self):
         """
@@ -104,7 +106,7 @@ class ProxyRequestHandler(StreamRequestHandler):
         Forward the client's request to the destination via a randomly chosen IPv6 address.
         """
         ip, port, *_ = self.client_address
-        logging.info(f'Accepting connection from [{ip}]:{port}')
+        self.logger.info(f'Accepting connection from [{ip}]:{port}')
 
         # greeting header
         # read and unpack 2 bytes from a client
@@ -200,29 +202,29 @@ class ProxyRequestHandler(StreamRequestHandler):
 
         af, socktype, proto, _, sa = remote_info
 
-        assert isinstance(self.proxy_pool, Ipv6AddressProxyPool)
-        ipv6_address = self.proxy_pool.get_random_address()
-
         # Connect to the socket
         try:
             # Make the socket
             self._remote = socket.socket(af, socktype, proto)
-            self._remote.bind((ipv6_address, port))
-            # Bind it to an IP
-            # if hasattr(self.server, '_bind'):
-            #     self._remote.bind(self.server._bind)  # type: ignore
+            if hasattr(self.server, '_bind'):
+                self._remote.bind(self.server._bind)  # type: ignore
+            elif af == socket.AF_INET6:  # Bind it to a random IPv6 IP from the pool
+                assert isinstance(self.proxy_pool, Ipv6AddressProxyPool)
+                ipv6_address = self.proxy_pool.get_random_address()
+                self._remote.bind((ipv6_address, 0, 0, 0))
+
             self._remote.connect(sa)
             bind_address = self._remote.getsockname()
             logging.info(f'Connected to {address} {port}')
 
             # Get the bind address and port
             # Check if the address is IPv4 or IPv6
+            bind_port = bind_address[1]
             if ':' in bind_address[0]:  # IPv6
                 addr = struct.unpack("!IIII", socket.inet_pton(socket.AF_INET6, bind_address[0]))
             else:  # IPv4
                 addr = struct.unpack("!I", socket.inet_aton(bind_address[0]))[0]
-            port = bind_address[1]
-            logging.debug(f'Bind address {addr} {port}')
+            logging.debug(f'Bind address {addr} {bind_port}')
         except Exception as err:
             logging.error(err)
             # TO-DO: Get the actual failure code instead of giving ConnRefused each time
@@ -232,10 +234,10 @@ class ProxyRequestHandler(StreamRequestHandler):
         # Check if the address type is IPv4 or IPv6 and pack the response data accordingly
         if address_type == AddressDataType.IPv4:
             response_data = struct.pack(
-                "!BBBBIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, addr, port)
+                "!BBBBIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, addr, bind_port)
         elif address_type == AddressDataType.IPv6:
             response_data = struct.pack(
-                "!BBBBIIIIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, *addr, port)
+                "!BBBBIIIIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, *addr, bind_port)
 
         self._send(response_data)
 

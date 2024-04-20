@@ -9,14 +9,16 @@ import subprocess
 class Ipv6AddressProxyPool:
     INTERFACE = 'eth0'
 
-    def __init__(self, n_ips: int = 8):
+    def __init__(self, logger, n_ips: int):
         self.__default_address_int = 0
         self.__hostmask_int = 0
-        self.__logger = logging.getLogger(__name__)
+        self.__logger = logger
         self.__n_ips = n_ips
+        self.__public_addresses = []
 
     def __enter__(self) -> 'Ipv6AddressProxyPool':
         try:
+            # e.g. '2001:db8::1/64' where /64 is the netmask
             default_ip_masked = sorted(
                 self.__find_allocated_ip_addresses(True),
                 key=lambda address: int(ipaddress.IPv6Address(address.split('/')[0]))
@@ -35,9 +37,8 @@ class Ipv6AddressProxyPool:
 
         self.__default_address_int = int(default_ip_address)
         self.__hostmask_int = int(public_network.hostmask)
-        self.__addresses = []
         for _ in range(self.__n_ips):
-            self.__addresses.append(self.__create_random_address())
+            self.__public_addresses.append(self.__create_random_address())
 
         return self
 
@@ -57,15 +58,14 @@ class Ipv6AddressProxyPool:
         )
 
         if result.returncode == 2:
-            self.__logger.info(f'IP address already exists: {ip_address}')
-            return
+            raise ValueError(f'IP address already exists: {ip_address}')
 
         if result.returncode != 0:
             raise RuntimeError(f'Failed to create IP address: {result.stdout}\n{result.stderr}')
 
     def get_random_address(self) -> str:
         """Get a random IP address from the pool."""
-        return random.choice(self.__addresses)
+        return random.choice(self.__public_addresses)
 
     def __create_random_address(self) -> str:
         ipv6_address = str(ipaddress.IPv6Address(random.randint(

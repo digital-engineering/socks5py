@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-import logging
-
 from soxprox.command import SoxProxCmd
 
-logging.basicConfig(level=logging.DEBUG)
 
 """
 @see: https://github.com/itsjfx/python-socks5-server

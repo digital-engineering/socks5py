@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "./soxprox.py",
             "args": [
-                "-v"
+                "-vv"
             ],
             "console": "integratedTerminal",
             "justMyCode": true
