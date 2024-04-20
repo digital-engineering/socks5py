@@ -56,6 +56,10 @@ class Ipv6AddressProxyPool:
             text=True
         )
 
+        if result.returncode == 2:
+            self.__logger.info(f'IP address already exists: {ip_address}')
+            return
+
         if result.returncode != 0:
             raise RuntimeError(f'Failed to create IP address: {result.stdout}\n{result.stderr}')
 
