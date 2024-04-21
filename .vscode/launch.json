@@ -22,7 +22,8 @@
             "program": "./soxprox.py",
             "args": [
                 "-vv",
-                "--interface-ipv4=enp7s0"
+                "--interface-ipv4=enp7s0",
+                "--scope-ipv4=private"
             ],
             "console": "integratedTerminal",
             "justMyCode": true
