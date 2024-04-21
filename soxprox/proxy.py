@@ -7,7 +7,7 @@ import sys
 from socketserver import ThreadingMixIn, TCPServer, StreamRequestHandler
 from typing import Callable, Literal
 
-from soxprox.pool import Ipv6AddressProxyPool
+from soxprox.pool import IpAddressProxyPool
 
 # Constants
 BIND_PORT = 0  # set to 0 if we are binding an address, lets the kernel decide a free port
@@ -56,7 +56,6 @@ class StatusCode:
 
 class SOCKS5Proxy(ThreadingMixIn, TCPServer):
     """Just the server which will process a dictionary of options and initialise the socket server."""
-    address_family = socket.AF_INET6
     allow_reuse_address = True
 
     def __init__(self, host_port: tuple[str, int], options: dict | None = None):
@@ -89,6 +88,8 @@ class SOCKS5Proxy(ThreadingMixIn, TCPServer):
                 logging.error("Failed to resolve bind address")
                 sys.exit()
 
+        self.address_family = socket.AF_INET6 if ':' in host_port[0] else socket.AF_INET
+
         super().__init__(host_port, ProxyRequestHandler)
 
 
@@ -97,7 +98,7 @@ class ProxyRequestHandler(StreamRequestHandler):
     password = 'password'
 
     logger: logging.Logger
-    proxy_pool: Ipv6AddressProxyPool
+    proxy_pool: IpAddressProxyPool
 
     def handle(self):
         """
@@ -274,7 +275,7 @@ class ProxyRequestHandler(StreamRequestHandler):
             if hasattr(self.server, '_bind'):
                 self._remote.bind(self.server._bind)  # type: ignore
             elif af == socket.AF_INET6:  # Bind it to a random IPv6 IP from the pool
-                assert isinstance(self.proxy_pool, Ipv6AddressProxyPool)
+                assert isinstance(self.proxy_pool, IpAddressProxyPool)
                 ipv6_address = self.proxy_pool.get_random_address()
                 self._remote.bind((ipv6_address, 0, 0, 0))
 
