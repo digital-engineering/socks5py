@@ -1,0 +1,12 @@
+[Unit]
+Description=soxprox process manager
+After=network.target
+OnFailure=status-email-admin@%n.service
+
+[Service]
+Type=forking
+User=pipeline
+ExecStart=/usr/bin/python3 /home/pipeline/soxprox/soxprox.py --interface-ipv4 eth0 --scope-ipv4 private
+
+[Install]
+WantedBy=multi-user.target
