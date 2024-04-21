@@ -230,6 +230,13 @@ class ProxyRequestHandler(StreamRequestHandler):
             # TO-DO: Get the actual failure code instead of giving ConnRefused each time
             self._send_failure(StatusCode.ConnRefused)
 
+        # if Address type is domain, convert to IPv4 or IPv6 for response data
+        if address_type == AddressDataType.DomainName:
+            if af == socket.AF_INET:
+                address_type = AddressDataType.IPv4
+            else:
+                address_type = AddressDataType.IPv6
+
         # TO-DO: Are the BND.ADDR and BND.PORT returned correct values?
         # Check if the address type is IPv4 or IPv6 and pack the response data accordingly
         if address_type == AddressDataType.IPv4:
