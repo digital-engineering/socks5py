@@ -7,55 +7,13 @@ import sys
 from socketserver import ThreadingMixIn, TCPServer, StreamRequestHandler
 from typing import Callable, Literal
 
+from soxprox.enum import AddressDataType, AuthMethod, StatusCode
 from soxprox.pool import IpAddressProxyPool
-
-# Constants
-BIND_PORT = 0  # set to 0 if we are binding an address, lets the kernel decide a free port
-CONNECT = 1
-CONNECTION_TIMEOUT = 60 * 15 * 1000
-FAILURE = 0xFF
-RESERVED = 0
-SOCKS_VERSION = 5
-USERNAME_PASSWORD_VERSION = 1
-
-# Buffer sizes
-CONN_NO_PORT_SIZE = 4
-CONN_PORT_SIZE = 2
-COPY_LOOP_BUFFER_SIZE = 4096
-DOMAIN_SIZE = 1
-GREETING_SIZE = 2
-ID_LEN_SIZE = 1
-PW_LEN_SIZE = 1
-VERSION_SIZE = 1
-
-
-class AddressDataType:
-    IPv4 = 1
-    DomainName = 3
-    IPv6 = 4
-
-
-class AuthMethod:
-    NoAuth = 0
-    GSSAPI = 1
-    UsernamePassword = 2
-    Invalid = 0xFF
-
-
-class StatusCode:
-    Success = 0
-    GeneralFailure = 1
-    NotAllowed = 2
-    NetUnreachable = 3
-    HostUnreachable = 4
-    ConnRefused = 5
-    TTLExpired = 6
-    CommandNotSupported = 7
-    AddressTypeNotSupported = 8
 
 
 class SOCKS5Proxy(ThreadingMixIn, TCPServer):
-    """Just the server which will process a dictionary of options and initialise the socket server."""
+    """SOCKS5 TCP socket server."""
+    BIND_PORT = 0  # set to 0 if we are binding an address, lets the kernel decide a free port
     allow_reuse_address = True
 
     def __init__(self, host_port: tuple[str, int], options: dict | None = None):
@@ -81,7 +39,8 @@ class SOCKS5Proxy(ThreadingMixIn, TCPServer):
             # This should error out if invalid
             # This allows us to parse the address given by a user on the start of the server
             bind_addr_info = socket.getaddrinfo(
-                options['bind_address'], BIND_PORT, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
+                options['bind_address'], self.BIND_PORT, family=socket.AF_UNSPEC,
+                type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
             if len(bind_addr_info) > 0:
                 self._bind = bind_addr_info[0][4]  # Is picking first a good idea?
             else:
@@ -94,6 +53,24 @@ class SOCKS5Proxy(ThreadingMixIn, TCPServer):
 
 
 class ProxyRequestHandler(StreamRequestHandler):
+    # Constants
+    CONNECT = 1
+    CONNECTION_TIMEOUT = 60 * 15 * 1000
+    FAILURE = 0xFF
+    RESERVED = 0
+    SOCKS_VERSION = 5
+    USERNAME_PASSWORD_VERSION = 1
+
+    # Buffer sizes
+    CONN_NO_PORT_SIZE = 4
+    CONN_PORT_SIZE = 2
+    COPY_LOOP_BUFFER_SIZE = 4096
+    DOMAIN_SIZE = 1
+    GREETING_SIZE = 2
+    ID_LEN_SIZE = 1
+    PW_LEN_SIZE = 1
+    VERSION_SIZE = 1
+
     username = 'username'
     password = 'password'
 
@@ -106,12 +83,12 @@ class ProxyRequestHandler(StreamRequestHandler):
 
         Forward the client's request to the destination via a randomly chosen IPv6 address.
         """
-        ip, port, *_ = self.client_address
-        self.logger.info(f'Accepting connection from [{ip}]:{port}')
+        client_ip, client_port, *_ = self.client_address
+        self.logger.info(f'Accepting connection from [{client_ip}]:{client_port}')
 
         self._auth_client()
         address_type, address = self._handle_client_request()
-        response_data = self._get_response_data(address_type, address)
+        response_data = self._get_response_data(client_ip, address_type, address)
 
         # Send the response data to the client
         self._send(response_data)
@@ -154,7 +131,7 @@ class ProxyRequestHandler(StreamRequestHandler):
         return False
 
     def generate_failed_reply(self, address_type, error_number):
-        return struct.pack("!BBBBIH", SOCKS_VERSION, error_number, 0, address_type, 0, 0)
+        return struct.pack("!BBBBIH", self.SOCKS_VERSION, error_number, 0, address_type, 0, 0)
 
     def exchange_loop(self, client, remote):
         while True:
@@ -178,11 +155,11 @@ class ProxyRequestHandler(StreamRequestHandler):
         # greeting header
         # read and unpack 2 bytes from a client
         # header = self.connection.recv(2)
-        header = self._recv(GREETING_SIZE, self._send_greeting_failure, AuthMethod.Invalid)
+        header = self._recv(self.GREETING_SIZE, self._send_greeting_failure, AuthMethod.Invalid)
         version, n_methods = struct.unpack("!BB", header)
 
         # Only accept SOCKS5
-        if version != SOCKS_VERSION:
+        if version != self.SOCKS_VERSION:
             self._send_greeting_failure(self.auth_method)
 
         # We need at least one method
@@ -199,7 +176,7 @@ class ProxyRequestHandler(StreamRequestHandler):
             self._send_greeting_failure(AuthMethod.Invalid)
 
         # Choose an authentication method and send it to the client
-        self._send(struct.pack("!BB", SOCKS_VERSION, self.auth_method))
+        self._send(struct.pack("!BB", self.SOCKS_VERSION, self.auth_method))
 
         # If we are asking for USERNAME/PASSWORD auth verify it
         if self.auth_method:
@@ -216,7 +193,7 @@ class ProxyRequestHandler(StreamRequestHandler):
             # Alternatively use poll() instead of select() due to these reasons
             # https://github.com/rofl0r/microsocks/commit/31557857ccce5e4fdd2cfdae7ab640d589aa2b41
             # May not be ideal for a cross platform implementation however
-            r, w, e = select.select([client, remote], [], [], CONNECTION_TIMEOUT)
+            r, w, e = select.select([client, remote], [], [], self.CONNECTION_TIMEOUT)
 
             # Kill inactive/unused connections
             if not r and not w and not e:
@@ -224,7 +201,7 @@ class ProxyRequestHandler(StreamRequestHandler):
 
             for sock in r:
                 try:
-                    data = sock.recv(COPY_LOOP_BUFFER_SIZE)
+                    data = sock.recv(self.COPY_LOOP_BUFFER_SIZE)
                 except Exception as err:
                     self.logger.debug("Copy loop failed to read")
                     self.logger.error(err)
@@ -251,8 +228,9 @@ class ProxyRequestHandler(StreamRequestHandler):
         if not dontExit:
             sys.exit()
 
-    def _get_response_data(self, address_type, address):
-        port_buffer = self._recv(CONN_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure)
+    def _get_response_data(self, client_ip: str, address_type: int, address: str):
+        port_buffer = self._recv(
+            self.CONN_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure)
         port = struct.unpack('!H', port_buffer)[0]
 
         # Translate our address and port into data from which we can create a socket connection
@@ -261,12 +239,19 @@ class ProxyRequestHandler(StreamRequestHandler):
                 address, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
             # Pick the first one returned, probably IPv6 if IPv6 is available or IPv4 if not
             # TO-DO: Try as many as possible in a loop instead of picking only the first returned
-            remote_info = remote_info[0]
+            test_af = socket.AF_INET6 if ':' in client_ip else socket.AF_INET
+            remote_info = filtered[0] if (
+                filtered := [info for info in remote_info if info[0] == test_af]
+            ) else remote_info[0]
+
         except Exception as err:  # There's no suitable errorcode in RFC1928 for DNS lookup failure
             self.logger.error(err)
             self._send_failure(StatusCode.GeneralFailure)
 
         af, socktype, proto, _, sa = remote_info
+        assert af in (socket.AF_INET, socket.AF_INET6)
+        assert isinstance(socktype, int)
+        assert isinstance(proto, int)
 
         # Connect to the socket
         try:
@@ -307,16 +292,18 @@ class ProxyRequestHandler(StreamRequestHandler):
         # Check if the address type is IPv4 or IPv6 and pack the response data accordingly
         if address_type == AddressDataType.IPv4:
             response_data = struct.pack(
-                "!BBBBIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, addr, bind_port)
+                "!BBBBIH", self.SOCKS_VERSION, StatusCode.Success, self.RESERVED, address_type, addr, bind_port)
         elif address_type == AddressDataType.IPv6:
             response_data = struct.pack(
-                "!BBBBIIIIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, *addr, bind_port)
+                "!BBBBIIIIH", self.SOCKS_VERSION, StatusCode.Success, self.RESERVED, address_type, *addr, bind_port)
 
         return response_data
 
     def _handle_client_request(self):
-        conn_buffer = self._recv(CONN_NO_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure)
-        version, cmd, rsv, address_type = struct.unpack("!BBBB", conn_buffer)
+        version, cmd, rsv, address_type = struct.unpack("!BBBB", self._recv(
+            self.CONN_NO_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure
+        ))
+
         # Do this so we can send an address_type in our errors
         # We don't want to send an invalid one back in an error so we will
         # handle an invalid address type first
@@ -326,11 +313,11 @@ class ProxyRequestHandler(StreamRequestHandler):
         else:
             self._send_failure(StatusCode.AddressTypeNotSupported)
 
-        if version != SOCKS_VERSION:
+        if version != self.SOCKS_VERSION:
             self._send_failure(StatusCode.GeneralFailure)
-        if cmd != CONNECT:  # We only support connect
+        if cmd != self.CONNECT:  # We only support connect
             self._send_failure(StatusCode.CommandNotSupported)
-        if rsv != RESERVED:  # Malformed packet
+        if rsv != self.RESERVED:  # Malformed packet
             self._send_failure(StatusCode.GeneralFailure)
 
         self.logger.debug(f'Handling request with address type: {address_type}')
@@ -352,7 +339,8 @@ class ProxyRequestHandler(StreamRequestHandler):
                 self._send_failure(StatusCode.GeneralFailure)
 
         elif address_type == AddressDataType.DomainName:  # Domain name
-            domain_buffer = self._recv(DOMAIN_SIZE, self._send_failure, StatusCode.GeneralFailure)
+            domain_buffer = self._recv(
+                self.DOMAIN_SIZE, self._send_failure, StatusCode.GeneralFailure)
             domain_length = domain_buffer[0]
             if domain_length > 255:  # Invalid
                 self._send_failure(StatusCode.GeneralFailure)
@@ -390,19 +378,18 @@ class ProxyRequestHandler(StreamRequestHandler):
 
     def _send_authentication_failure(self, code):
         """Send a failure message to a client in the authentication stage"""
-        self._send(struct.pack("!BB", USERNAME_PASSWORD_VERSION, code))
+        self._send(struct.pack("!BB", self.USERNAME_PASSWORD_VERSION, code))
         self._exit()
 
     def _send_failure(self, code):
         """Send a failure message to a client in the socket stage"""
-        address_type = self._address_type if hasattr(
-            self, "_address_type") else AddressDataType.IPv4
-        self._send(struct.pack("!BBBBIH", SOCKS_VERSION, code, RESERVED, address_type, 0, 0))
+        a_type = self._address_type if hasattr(self, "_address_type") else AddressDataType.IPv4
+        self._send(struct.pack("!BBBBIH", self.SOCKS_VERSION, code, self.RESERVED, a_type, 0, 0))
         self._exit()
 
     def _send_greeting_failure(self, code):
         """Send a failure message to a client in the greeting stage"""
-        self._send(struct.pack("!BB", SOCKS_VERSION, code))
+        self._send(struct.pack("!BB", self.SOCKS_VERSION, code))
         self._exit()
 
     def _shutdown_client(self):
@@ -414,22 +401,22 @@ class ProxyRequestHandler(StreamRequestHandler):
         Verify the credentials of a client and send a response relevant response.
         Close the connection & thread if unauthenticated.
         """
-        version = ord(self._recv(VERSION_SIZE))
-        if version != USERNAME_PASSWORD_VERSION:
+        version = ord(self._recv(self.VERSION_SIZE))
+        if version != self.USERNAME_PASSWORD_VERSION:
             self.logger.error(f'USERNAME_PASSWORD_VERSION did not match')
-            self._send_authentication_failure(FAILURE)
+            self._send_authentication_failure(self.FAILURE)
 
-        username_len = self._recv(ID_LEN_SIZE, self._send_authentication_failure, FAILURE)
-        username = self._recv(ord(username_len), self._send_authentication_failure, FAILURE)
+        un_len = self._recv(self.ID_LEN_SIZE, self._send_authentication_failure, self.FAILURE)
+        username = self._recv(ord(un_len), self._send_authentication_failure, self.FAILURE)
 
-        password_len = self._recv(PW_LEN_SIZE, self._send_authentication_failure, FAILURE)
-        password = self._recv(ord(password_len), self._send_authentication_failure, FAILURE)
+        pw_len = self._recv(self.PW_LEN_SIZE, self._send_authentication_failure, self.FAILURE)
+        password = self._recv(ord(pw_len), self._send_authentication_failure, self.FAILURE)
 
         server_username, server_password = self.server._auth  # type: ignore
 
         if username.decode('utf-8') == server_username and password.decode('utf-8') == server_password:
-            self._send(struct.pack("!BB", USERNAME_PASSWORD_VERSION, StatusCode.Success))
+            self._send(struct.pack("!BB", self.USERNAME_PASSWORD_VERSION, StatusCode.Success))
             return True
 
         self.logger.error(f'Authentication failed')
-        self._send_authentication_failure(FAILURE)
+        self._send_authentication_failure(self.FAILURE)

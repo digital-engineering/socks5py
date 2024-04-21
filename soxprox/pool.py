@@ -21,7 +21,7 @@ class IpAddressProxyPool:
         try:
             # e.g. '2001:db8::1/64' where /64 is the netmask
             default_ip_masked = sorted(
-                self.find_allocated_ip_addresses(True),
+                self.search_ip_addresses(self.__interface, True),
                 key=lambda address: int(ipaddress.IPv6Address(address.split('/')[0]))
             )[0]  # Assume lowest IPv6 address is the default ip
             default_ip = default_ip_masked.split('/')[0]
@@ -64,11 +64,12 @@ class IpAddressProxyPool:
         if result.returncode != 0:
             raise RuntimeError(f'Failed to create IP address: {result.stdout}\n{result.stderr}')
 
-    def find_allocated_ip_addresses(
+    def search_ip_addresses(
             self,
+            if_name: str,
             append_mask: bool = False,
             af: int = socket.AF_INET6,
-            scope: Literal['global', 'private'] = 'global'
+            scope: Literal['global', 'private'] = 'global',
     ) -> list[str]:
         """Find all IP addresses on the interface.
 
@@ -76,18 +77,20 @@ class IpAddressProxyPool:
         (eth0 by default) return a list of public IP addresses on that interface.
 
         Args:
+            if_name (str, optional):      The interface name, e.g. 'eth0'.
             append_mask (bool, optional): If True, will append the CIDR bitmask. [default: False]
-            af (int, optional): The address family to search for. [default: socket.AF_INET6]
+            af (int, optional):           The address family to search for. [default: socket.AF_INET6]
+            scope (str, optional):        The scope of the IP address. [default: 'global']
 
         Returns:
             list[str]: List of public IPv6 addresses on the interface.
         """
         return [
             (f'{address}/{self.__netmask_to_cidr(str(snic.netmask))}'
-             if (address := snic.address.replace(f'%{self.__interface}', ''))
+             if (address := snic.address.replace(f'%{if_name}', ''))
              and append_mask
              else address)
-            for snic in (psutil.net_if_addrs().get(self.__interface) or [])
+            for snic in (psutil.net_if_addrs().get(if_name) or [])
             if (
                 snic.family == af and (
                     scope == 'global' and (
@@ -124,7 +127,7 @@ class IpAddressProxyPool:
 
     def __shutdown(self) -> None:
         """Remove all ipv6 addresses."""
-        for address in self.find_allocated_ip_addresses():
+        for address in self.search_ip_addresses(self.__interface):
             if int(ipaddress.IPv6Address(address)) == self.__default_address_int:
                 continue  # DON'T remove the origin public IPv6 address
 

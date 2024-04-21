@@ -1,29 +1,44 @@
 import ipaddress
 import logging
 import socket
-import threading
 import time
+
+from threading import Thread
+from typing import Any, Literal
 
 from soxprox.pool import IpAddressProxyPool
 from soxprox.proxy import ProxyRequestHandler, SOCKS5Proxy
 
 
 class AppController:
+    __LOGGER_FORMAT = '%(asctime)s - %(name)s [%(levelname)s] %(message)s'
+
     def __init__(self, verbosity: int = 0):
+        # Configure logging
+        config: dict[str, Any] = {'format': self.__LOGGER_FORMAT}
         if not verbosity:
-            verbosity = logging.WARNING
+            config['level'] = logging.WARNING
         elif verbosity == 1:
-            verbosity = logging.INFO
+            config['level'] = logging.INFO
         elif verbosity >= 2:
-            verbosity = logging.DEBUG
-        logging.basicConfig(level=verbosity)
+            config['level'] = logging.DEBUG
+        logging.basicConfig(**config)
+
+        # Create logger
         self.__logger = logging.getLogger('soxprox')
 
-    def run(self,  n_ips: int, listen_port: int = 1080) -> None:
-        proxy_pool = IpAddressProxyPool(self.__logger, n_ips)
+    def run(
+        self,
+        n_ips: int,
+        port: int,
+        if_ipv4: str,
+        scope_ipv4: Literal['global', 'private'] = 'private'
+    ) -> None:
+        pool = IpAddressProxyPool(self.__logger, n_ips)
+
         # Create threads
-        thread1 = threading.Thread(target=self._start_ipv4_server, args=(proxy_pool, listen_port))
-        thread2 = threading.Thread(target=self._start_ipv6_server, args=(proxy_pool, listen_port))
+        thread1 = Thread(target=self._serve_ipv4, args=(pool, port, if_ipv4, scope_ipv4))
+        thread2 = Thread(target=self._start_ipv6_server, args=(pool, port))
 
         # Start threads
         thread1.start()
@@ -31,15 +46,23 @@ class AppController:
 
         # Wait for both threads to complete
         thread1.join()
-        thread2.join()        
+        thread2.join()
 
-    def _start_ipv4_server(self, proxy_pool: IpAddressProxyPool, listen_port: int):
-        ipv4_addresses = proxy_pool.find_allocated_ip_addresses(af=socket.AF_INET, scope='private')
+    def _serve_ipv4(
+        self,
+        proxy_pool: IpAddressProxyPool,
+        listen_port: int,
+        interface: str,
+        scope: Literal['global', 'private']
+    ) -> None:
+        # Find the private IP addresses
+        ipv4_addresses = proxy_pool.search_ip_addresses(interface, False, socket.AF_INET, scope)
+        # Start the server
         with SOCKS5Proxy((ipv4_addresses[0], listen_port)) as server:
             self.__logger.info(f'Listening on {ipv4_addresses[0]}:{listen_port}')
             server.serve_forever()
 
-    def _start_ipv6_server(self, proxy_pool: IpAddressProxyPool, listen_port: int):
+    def _start_ipv6_server(self, proxy_pool: IpAddressProxyPool, listen_port: int) -> None:
         with proxy_pool:
             ProxyRequestHandler.proxy_pool = proxy_pool
             ProxyRequestHandler.logger = self.__logger
