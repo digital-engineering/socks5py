@@ -15,5 +15,17 @@
             "console": "integratedTerminal",
             "justMyCode": true
         },
+        {
+            "name": "soxprox (remote)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./soxprox.py",
+            "args": [
+                "-vv",
+                "--interface-ipv4=enp7s0"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
     ]
 }
