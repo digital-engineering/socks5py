@@ -108,144 +108,11 @@ class ProxyRequestHandler(StreamRequestHandler):
         ip, port, *_ = self.client_address
         self.logger.info(f'Accepting connection from [{ip}]:{port}')
 
-        # greeting header
-        # read and unpack 2 bytes from a client
-        # header = self.connection.recv(2)
-        header = self._recv(GREETING_SIZE, self._send_greeting_failure, AuthMethod.Invalid)
-        version, n_methods = struct.unpack("!BB", header)
+        self._auth_client()
+        address_type, address = self._handle_client_request()
+        response_data = self._get_response_data(address_type, address)
 
-        # Only accept SOCKS5
-        if version != SOCKS_VERSION:
-            self._send_greeting_failure(self.auth_method)
-
-        # We need at least one method
-        if n_methods < 1:
-            self._send_greeting_failure(AuthMethod.Invalid)
-
-        # get available methods
-        methods = self.get_available_methods(n_methods)
-
-        # Accept only USERNAME/PASSWORD auth if we are asking for auth
-        # Accept only no auth if we are not asking for USERNAME/PASSWORD
-        if (self.auth_method and AuthMethod.UsernamePassword not in set(methods)) or (
-                not self.auth_method and AuthMethod.NoAuth not in set(methods)):
-            self._send_greeting_failure(AuthMethod.Invalid)
-
-        # Choose an authentication method and send it to the client
-        self._send(struct.pack("!BB", SOCKS_VERSION, self.auth_method))
-
-        # If we are asking for USERNAME/PASSWORD auth verify it
-        if self.auth_method:
-            self._verify_credentials()
-
-        # Auth/greeting handled...
-        self.logger.debug("Successfully authenticated")
-
-        # Handle the request
-        conn_buffer = self._recv(CONN_NO_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure)
-        version, cmd, rsv, address_type = struct.unpack("!BBBB", conn_buffer)
-        # Do this so we can send an address_type in our errors
-        # We don't want to send an invalid one back in an error so we will handle an invalid address
-        # type first
-        # Microsocks just always sends IPv4 instead
-        if address_type in [AddressDataType.IPv4, AddressDataType.IPv6, AddressDataType.DomainName]:
-            self._address_type = address_type
-        else:
-            self._send_failure(StatusCode.AddressTypeNotSupported)
-
-        if version != SOCKS_VERSION:
-            self._send_failure(StatusCode.GeneralFailure)
-        if cmd != CONNECT:  # We only support connect
-            self._send_failure(StatusCode.CommandNotSupported)
-        if rsv != RESERVED:  # Malformed packet
-            self._send_failure(StatusCode.GeneralFailure)
-
-        self.logger.debug(f'Handling request with address type: {address_type}')
-
-        if address_type == AddressDataType.IPv4 or address_type == AddressDataType.IPv6:
-            address_family = (
-                socket.AF_INET if address_type == AddressDataType.IPv4 else socket.AF_INET6)
-
-            minlen = 4 if address_type == AddressDataType.IPv4 else 16
-            # Raw IP address bytes
-            raw = self._recv(minlen, self._send_failure, StatusCode.GeneralFailure)
-
-            # Convert the IP address from binary to text
-            try:
-                address = socket.inet_ntop(address_family, raw)
-            except Exception as err:
-                self.logger.debug(f'Could not convert packed IP {raw} to string')
-                self.logger.error(err)
-                self._send_failure(StatusCode.GeneralFailure)
-
-        elif address_type == AddressDataType.DomainName:  # Domain name
-            domain_buffer = self._recv(DOMAIN_SIZE, self._send_failure, StatusCode.GeneralFailure)
-            domain_length = domain_buffer[0]
-            if domain_length > 255:  # Invalid
-                self._send_failure(StatusCode.GeneralFailure)
-
-            address = self._recv(domain_length, self._send_failure, StatusCode.GeneralFailure)
-
-        port_buffer = self._recv(CONN_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure)
-        port = struct.unpack('!H', port_buffer)[0]
-
-        # Translate our address and port into data from which we can create a socket connection
-        try:
-            remote_info = socket.getaddrinfo(
-                address, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
-            # Pick the first one returned, probably IPv6 if IPv6 is available or IPv4 if not
-            # TO-DO: Try as many as possible in a loop instead of picking only the first returned
-            remote_info = remote_info[0]
-        except Exception as err:  # There's no suitable errorcode in RFC1928 for DNS lookup failure
-            self.logger.error(err)
-            self._send_failure(StatusCode.GeneralFailure)
-
-        af, socktype, proto, _, sa = remote_info
-
-        # Connect to the socket
-        try:
-            # Make the socket
-            self._remote = socket.socket(af, socktype, proto)
-            if hasattr(self.server, '_bind'):
-                self._remote.bind(self.server._bind)  # type: ignore
-            elif af == socket.AF_INET6:  # Bind it to a random IPv6 IP from the pool
-                assert isinstance(self.proxy_pool, Ipv6AddressProxyPool)
-                ipv6_address = self.proxy_pool.get_random_address()
-                self._remote.bind((ipv6_address, 0, 0, 0))
-
-            self._remote.connect(sa)
-            bind_address = self._remote.getsockname()
-            self.logger.info(f'Connected to {address} {port}')
-
-            # Get the bind address and port
-            # Check if the address is IPv4 or IPv6
-            bind_port = bind_address[1]
-            if ':' in bind_address[0]:  # IPv6
-                addr = struct.unpack("!IIII", socket.inet_pton(socket.AF_INET6, bind_address[0]))
-            else:  # IPv4
-                addr = struct.unpack("!I", socket.inet_aton(bind_address[0]))[0]
-            self.logger.debug(f'Bind address {addr} {bind_port}')
-        except Exception as err:
-            self.logger.error(err)
-            # TO-DO: Get the actual failure code instead of giving ConnRefused each time
-            self._send_failure(StatusCode.ConnRefused)
-
-        # if Address type is domain, convert to IPv4 or IPv6 for response data
-        if address_type == AddressDataType.DomainName:
-            if af == socket.AF_INET:
-                address_type = AddressDataType.IPv4
-            else:
-                address_type = AddressDataType.IPv6
-
-        # TO-DO: Are the BND.ADDR and BND.PORT returned correct values?
-        # Check if the address type is IPv4 or IPv6 and pack the response data accordingly
-        if address_type == AddressDataType.IPv4:
-            response_data = struct.pack(
-                "!BBBBIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, addr, bind_port)
-        elif address_type == AddressDataType.IPv6:
-            response_data = struct.pack(
-                "!BBBBIIIIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, *addr, bind_port)
-
+        # Send the response data to the client
         self._send(response_data)
 
         # Run the copy loop
@@ -306,6 +173,40 @@ class ProxyRequestHandler(StreamRequestHandler):
                 if client.send(data) <= 0:
                     break
 
+    def _auth_client(self):
+        # greeting header
+        # read and unpack 2 bytes from a client
+        # header = self.connection.recv(2)
+        header = self._recv(GREETING_SIZE, self._send_greeting_failure, AuthMethod.Invalid)
+        version, n_methods = struct.unpack("!BB", header)
+
+        # Only accept SOCKS5
+        if version != SOCKS_VERSION:
+            self._send_greeting_failure(self.auth_method)
+
+        # We need at least one method
+        if n_methods < 1:
+            self._send_greeting_failure(AuthMethod.Invalid)
+
+        # get available methods
+        methods = self.get_available_methods(n_methods)
+
+        # Accept only USERNAME/PASSWORD auth if we are asking for auth
+        # Accept only no auth if we are not asking for USERNAME/PASSWORD
+        if (self.auth_method and AuthMethod.UsernamePassword not in set(methods)) or (
+                not self.auth_method and AuthMethod.NoAuth not in set(methods)):
+            self._send_greeting_failure(AuthMethod.Invalid)
+
+        # Choose an authentication method and send it to the client
+        self._send(struct.pack("!BB", SOCKS_VERSION, self.auth_method))
+
+        # If we are asking for USERNAME/PASSWORD auth verify it
+        if self.auth_method:
+            self._verify_credentials()
+
+        # Auth/greeting handled...
+        self.logger.debug("Successfully authenticated")
+
     def _copy_loop(self, client, remote):
         """Waits for network activity and forwards it to the other connection"""
         while True:
@@ -348,6 +249,115 @@ class ProxyRequestHandler(StreamRequestHandler):
 
         if not dontExit:
             sys.exit()
+
+    def _get_response_data(self, address_type, address):
+        port_buffer = self._recv(CONN_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure)
+        port = struct.unpack('!H', port_buffer)[0]
+
+        # Translate our address and port into data from which we can create a socket connection
+        try:
+            remote_info = socket.getaddrinfo(
+                address, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
+            # Pick the first one returned, probably IPv6 if IPv6 is available or IPv4 if not
+            # TO-DO: Try as many as possible in a loop instead of picking only the first returned
+            remote_info = remote_info[0]
+        except Exception as err:  # There's no suitable errorcode in RFC1928 for DNS lookup failure
+            self.logger.error(err)
+            self._send_failure(StatusCode.GeneralFailure)
+
+        af, socktype, proto, _, sa = remote_info
+
+        # Connect to the socket
+        try:
+            # Make the socket
+            self._remote = socket.socket(af, socktype, proto)
+            if hasattr(self.server, '_bind'):
+                self._remote.bind(self.server._bind)  # type: ignore
+            elif af == socket.AF_INET6:  # Bind it to a random IPv6 IP from the pool
+                assert isinstance(self.proxy_pool, Ipv6AddressProxyPool)
+                ipv6_address = self.proxy_pool.get_random_address()
+                self._remote.bind((ipv6_address, 0, 0, 0))
+
+            self._remote.connect(sa)
+            bind_address = self._remote.getsockname()
+            self.logger.info(f'Connected to {address} {port}')
+
+            # Get the bind address and port
+            # Check if the address is IPv4 or IPv6
+            bind_port = bind_address[1]
+            if ':' in bind_address[0]:  # IPv6
+                addr = struct.unpack("!IIII", socket.inet_pton(socket.AF_INET6, bind_address[0]))
+            else:  # IPv4
+                addr = struct.unpack("!I", socket.inet_aton(bind_address[0]))[0]
+            self.logger.debug(f'Bind address {addr} {bind_port}')
+        except Exception as err:
+            self.logger.error(err)
+            # TO-DO: Get the actual failure code instead of giving ConnRefused each time
+            self._send_failure(StatusCode.ConnRefused)
+
+        # if Address type is domain, convert to IPv4 or IPv6 for response data
+        if address_type == AddressDataType.DomainName:
+            if af == socket.AF_INET:
+                address_type = AddressDataType.IPv4
+            else:
+                address_type = AddressDataType.IPv6
+
+        # TO-DO: Are the BND.ADDR and BND.PORT returned correct values?
+        # Check if the address type is IPv4 or IPv6 and pack the response data accordingly
+        if address_type == AddressDataType.IPv4:
+            response_data = struct.pack(
+                "!BBBBIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, addr, bind_port)
+        elif address_type == AddressDataType.IPv6:
+            response_data = struct.pack(
+                "!BBBBIIIIH", SOCKS_VERSION, StatusCode.Success, RESERVED, address_type, *addr, bind_port)
+
+        return response_data
+
+    def _handle_client_request(self):
+        conn_buffer = self._recv(CONN_NO_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure)
+        version, cmd, rsv, address_type = struct.unpack("!BBBB", conn_buffer)
+        # Do this so we can send an address_type in our errors
+        # We don't want to send an invalid one back in an error so we will
+        # handle an invalid address type first
+        # microsocks just always sends IPv4 instead
+        if address_type in [AddressDataType.IPv4, AddressDataType.IPv6, AddressDataType.DomainName]:
+            self._address_type = address_type
+        else:
+            self._send_failure(StatusCode.AddressTypeNotSupported)
+
+        if version != SOCKS_VERSION:
+            self._send_failure(StatusCode.GeneralFailure)
+        if cmd != CONNECT:  # We only support connect
+            self._send_failure(StatusCode.CommandNotSupported)
+        if rsv != RESERVED:  # Malformed packet
+            self._send_failure(StatusCode.GeneralFailure)
+
+        self.logger.debug(f'Handling request with address type: {address_type}')
+
+        if address_type == AddressDataType.IPv4 or address_type == AddressDataType.IPv6:
+            address_family = (
+                socket.AF_INET if address_type == AddressDataType.IPv4 else socket.AF_INET6)
+
+            minlen = 4 if address_type == AddressDataType.IPv4 else 16
+            # Raw IP address bytes
+            raw = self._recv(minlen, self._send_failure, StatusCode.GeneralFailure)
+
+            # Convert the IP address from binary to text
+            try:
+                address = socket.inet_ntop(address_family, raw)
+            except Exception as err:
+                self.logger.debug(f'Could not convert packed IP {raw} to string')
+                self.logger.error(err)
+                self._send_failure(StatusCode.GeneralFailure)
+
+        elif address_type == AddressDataType.DomainName:  # Domain name
+            domain_buffer = self._recv(DOMAIN_SIZE, self._send_failure, StatusCode.GeneralFailure)
+            domain_length = domain_buffer[0]
+            if domain_length > 255:  # Invalid
+                self._send_failure(StatusCode.GeneralFailure)
+
+            address = self._recv(domain_length, self._send_failure, StatusCode.GeneralFailure)
+        return address_type, address
 
     def _recv(
         self,
