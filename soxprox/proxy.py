@@ -357,6 +357,7 @@ class ProxyRequestHandler(StreamRequestHandler):
                 self._send_failure(StatusCode.GeneralFailure)
 
             address = self._recv(domain_length, self._send_failure, StatusCode.GeneralFailure)
+
         return address_type, address
 
     def _recv(
