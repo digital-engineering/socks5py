@@ -139,7 +139,7 @@ class ProxyRequestHandler(StreamRequestHandler):
             self._verify_credentials()
 
         # Auth/greeting handled...
-        logging.debug("Successfully authenticated")
+        self.logger.debug("Successfully authenticated")
 
         # Handle the request
         conn_buffer = self._recv(CONN_NO_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure)
@@ -160,7 +160,7 @@ class ProxyRequestHandler(StreamRequestHandler):
         if rsv != RESERVED:  # Malformed packet
             self._send_failure(StatusCode.GeneralFailure)
 
-        logging.debug(f'Handling request with address type: {address_type}')
+        self.logger.debug(f'Handling request with address type: {address_type}')
 
         if address_type == AddressDataType.IPv4 or address_type == AddressDataType.IPv6:
             address_family = (
@@ -174,8 +174,8 @@ class ProxyRequestHandler(StreamRequestHandler):
             try:
                 address = socket.inet_ntop(address_family, raw)
             except Exception as err:
-                logging.debug(f'Could not convert packed IP {raw} to string')
-                logging.error(err)
+                self.logger.debug(f'Could not convert packed IP {raw} to string')
+                self.logger.error(err)
                 self._send_failure(StatusCode.GeneralFailure)
 
         elif address_type == AddressDataType.DomainName:  # Domain name
@@ -197,7 +197,7 @@ class ProxyRequestHandler(StreamRequestHandler):
             # TO-DO: Try as many as possible in a loop instead of picking only the first returned
             remote_info = remote_info[0]
         except Exception as err:  # There's no suitable errorcode in RFC1928 for DNS lookup failure
-            logging.error(err)
+            self.logger.error(err)
             self._send_failure(StatusCode.GeneralFailure)
 
         af, socktype, proto, _, sa = remote_info
@@ -215,7 +215,7 @@ class ProxyRequestHandler(StreamRequestHandler):
 
             self._remote.connect(sa)
             bind_address = self._remote.getsockname()
-            logging.info(f'Connected to {address} {port}')
+            self.logger.info(f'Connected to {address} {port}')
 
             # Get the bind address and port
             # Check if the address is IPv4 or IPv6
@@ -224,9 +224,9 @@ class ProxyRequestHandler(StreamRequestHandler):
                 addr = struct.unpack("!IIII", socket.inet_pton(socket.AF_INET6, bind_address[0]))
             else:  # IPv4
                 addr = struct.unpack("!I", socket.inet_aton(bind_address[0]))[0]
-            logging.debug(f'Bind address {addr} {bind_port}')
+            self.logger.debug(f'Bind address {addr} {bind_port}')
         except Exception as err:
-            logging.error(err)
+            self.logger.error(err)
             # TO-DO: Get the actual failure code instead of giving ConnRefused each time
             self._send_failure(StatusCode.ConnRefused)
 
@@ -317,8 +317,8 @@ class ProxyRequestHandler(StreamRequestHandler):
                 try:
                     data = sock.recv(COPY_LOOP_BUFFER_SIZE)
                 except Exception as err:
-                    logging.debug("Copy loop failed to read")
-                    logging.error(err)
+                    self.logger.debug("Copy loop failed to read")
+                    self.logger.error(err)
                     return
 
                 if not data or len(data) <= 0:
@@ -328,8 +328,8 @@ class ProxyRequestHandler(StreamRequestHandler):
                 try:
                     outfd.sendall(data)  # Python has its own sendall implemented
                 except Exception as err:
-                    logging.debug("Copy loop failed to send all data")
-                    logging.error(err)
+                    self.logger.debug("Copy loop failed to send all data")
+                    self.logger.error(err)
                     return
 
     def _exit(self, dontExit=False):
@@ -397,7 +397,7 @@ class ProxyRequestHandler(StreamRequestHandler):
         """
         version = ord(self._recv(VERSION_SIZE))
         if version != USERNAME_PASSWORD_VERSION:
-            logging.error(f'USERNAME_PASSWORD_VERSION did not match')
+            self.logger.error(f'USERNAME_PASSWORD_VERSION did not match')
             self._send_authentication_failure(FAILURE)
 
         username_len = self._recv(ID_LEN_SIZE, self._send_authentication_failure, FAILURE)
@@ -412,5 +412,5 @@ class ProxyRequestHandler(StreamRequestHandler):
             self._send(struct.pack("!BB", USERNAME_PASSWORD_VERSION, StatusCode.Success))
             return True
 
-        logging.error(f'Authentication failed')
+        self.logger.error(f'Authentication failed')
         self._send_authentication_failure(FAILURE)
