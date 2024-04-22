@@ -5,7 +5,7 @@ OnFailure=status-email-admin@%n.service
 
 [Service]
 User=pipeline
-ExecStart=/usr/bin/python3 /home/pipeline/Code/python/socks5-proxy/soxprox.py --interface-ipv4 enp7s0 --scope-ipv4 private
+ExecStart=/usr/bin/python3 /home/pipeline/Code/python/socks5py/soxprox.py --interface-ipv4 enp7s0 --scope-ipv4 private
 
 [Install]
 WantedBy=multi-user.target
