@@ -68,7 +68,7 @@ class AppController:
             ProxyRequestHandler.logger = self.__logger
             ipv6_listen_address = str(ipaddress.IPv6Address(proxy_pool.default_address + 1))
             try:
-                proxy_pool.create_address(ipv6_listen_address)
+                proxy_pool.create_ipv6_address(ipv6_listen_address)
                 time.sleep(3)  # give the system some time to register the address
             except ValueError:
                 self.__logger.info(f'Address {ipv6_listen_address} already exists.')

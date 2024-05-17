@@ -77,7 +77,7 @@ class ProxyRequestHandler(StreamRequestHandler):
     logger: logging.Logger
     proxy_pool: IpAddressProxyPool
 
-    def handle(self):
+    def handle(self) -> None:
         """
         Handle the connection.
 
@@ -102,13 +102,14 @@ class ProxyRequestHandler(StreamRequestHandler):
         """Gives us the authentication method we will use"""
         return AuthMethod.UsernamePassword if hasattr(self.server, '_auth') else AuthMethod.NoAuth
 
-    def get_available_methods(self, n):
+    def get_available_methods(self, n: int) -> list:
         methods = []
         for _ in range(n):
             methods.append(ord(self.connection.recv(1)))
+
         return methods
 
-    def verify_credentials(self):
+    def verify_credentials(self) -> bool:
         version = ord(self.connection.recv(1))
         assert version == 1
 
@@ -130,10 +131,10 @@ class ProxyRequestHandler(StreamRequestHandler):
         self.server.close_request(self.request)
         return False
 
-    def generate_failed_reply(self, address_type, error_number):
+    def generate_failed_reply(self, address_type, error_number) -> bytes:
         return struct.pack("!BBBBIH", self.SOCKS_VERSION, error_number, 0, address_type, 0, 0)
 
-    def exchange_loop(self, client, remote):
+    def exchange_loop(self, client, remote) -> None:
         while True:
             # wait until client or remote is available for read
             r, w, e = select.select([client, remote], [], [])
@@ -151,7 +152,7 @@ class ProxyRequestHandler(StreamRequestHandler):
                 if client.send(data) <= 0:
                     break
 
-    def _auth_client(self):
+    def _auth_client(self) -> None:
         # greeting header
         # read and unpack 2 bytes from a client
         # header = self.connection.recv(2)
@@ -185,7 +186,7 @@ class ProxyRequestHandler(StreamRequestHandler):
         # Auth/greeting handled...
         self.logger.debug("Successfully authenticated")
 
-    def _copy_loop(self, client, remote):
+    def _copy_loop(self, client, remote) -> None:
         """Waits for network activity and forwards it to the other connection"""
         while True:
             # Wait until client or remote is available for read
@@ -218,7 +219,7 @@ class ProxyRequestHandler(StreamRequestHandler):
                     self.logger.error(err)
                     return
 
-    def _exit(self, dontExit=False):
+    def _exit(self, dontExit: bool = False) -> None:
         """Exit the thread and cleanup any connections."""
         self._shutdown_client()
         if hasattr(self, "_remote"):
@@ -299,7 +300,7 @@ class ProxyRequestHandler(StreamRequestHandler):
 
         return response_data
 
-    def _handle_client_request(self):
+    def _handle_client_request(self) -> tuple:
         version, cmd, rsv, address_type = struct.unpack("!BBBB", self._recv(
             self.CONN_NO_PORT_SIZE, self._send_failure, StatusCode.GeneralFailure
         ))
@@ -376,27 +377,27 @@ class ProxyRequestHandler(StreamRequestHandler):
         """Send bytes to a client"""
         return self.request.sendall(data)
 
-    def _send_authentication_failure(self, code):
+    def _send_authentication_failure(self, code) -> None:
         """Send a failure message to a client in the authentication stage"""
         self._send(struct.pack("!BB", self.USERNAME_PASSWORD_VERSION, code))
         self._exit()
 
-    def _send_failure(self, code):
+    def _send_failure(self, code) -> None:
         """Send a failure message to a client in the socket stage"""
         a_type = self._address_type if hasattr(self, "_address_type") else AddressDataType.IPv4
         self._send(struct.pack("!BBBBIH", self.SOCKS_VERSION, code, self.RESERVED, a_type, 0, 0))
         self._exit()
 
-    def _send_greeting_failure(self, code):
+    def _send_greeting_failure(self, code) -> None:
         """Send a failure message to a client in the greeting stage"""
         self._send(struct.pack("!BB", self.SOCKS_VERSION, code))
         self._exit()
 
-    def _shutdown_client(self):
+    def _shutdown_client(self) -> None:
         """Shutdown and close the connection with a client"""
         self.server.shutdown_request(self.request)
 
-    def _verify_credentials(self):
+    def _verify_credentials(self) -> bool | None:
         """
         Verify the credentials of a client and send a response relevant response.
         Close the connection & thread if unauthenticated.

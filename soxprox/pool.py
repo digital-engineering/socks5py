@@ -32,9 +32,9 @@ class IpAddressProxyPool:
         public_network = ipaddress.IPv6Network(default_ip_masked, strict=False)
         if public_network.network_address > default_ip_address:
             raise RuntimeError(
-                'Public network address {} is higher than default ip address. {}'.format(
-                    str(public_network.network_address),
-                    default_ip))
+                'Public network address {} is greater than default ip address. {}'.format(
+                    str(public_network.network_address), default_ip
+                ))
 
         self.__default_address_int = int(default_ip_address)
         self.__hostmask_int = int(public_network.hostmask)
@@ -50,8 +50,8 @@ class IpAddressProxyPool:
     def default_address(self) -> int:
         return self.__default_address_int
 
-    def create_address(self, ip_address: str) -> None:
-        """Create a new IP address."""
+    def create_ipv6_address(self, ip_address: str) -> None:
+        """Create a new IPv6 address."""
         result = subprocess.run(
             ['sudo', 'ip', '-6', 'addr', 'add', ip_address, 'dev', self.__interface],
             capture_output=True,
@@ -59,10 +59,10 @@ class IpAddressProxyPool:
         )
 
         if result.returncode == 2:
-            raise ValueError(f'IP address already exists: {ip_address}')
+            raise ValueError(f'IPv6 address already exists: {ip_address}')
 
         if result.returncode != 0:
-            raise RuntimeError(f'Failed to create IP address: {result.stdout}\n{result.stderr}')
+            raise RuntimeError(f'Failed to create IPv6 address: {result.stdout}\n{result.stderr}')
 
     def search_ip_addresses(
             self,
@@ -112,7 +112,7 @@ class IpAddressProxyPool:
             self.__default_address_int + 1,
             self.__default_address_int + self.__hostmask_int - 1
         )))
-        self.create_address(ipv6_address)
+        self.create_ipv6_address(ipv6_address)
         return ipv6_address
 
     def __netmask_to_cidr(self, netmask: str) -> int:
