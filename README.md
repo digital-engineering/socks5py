@@ -1,8 +1,10 @@
-# Socks5Py
+# socks5py
 
 ## Description
 
 SOCKS5 Proxy that works with both IPv4 and IPv6 transparently.
+
+**DISCLAIMER**: This is currenltly only meant to be run on private networks. HTTP authentication is hardcoded to "username" and "password". This is a proof of concept and has not been thoroughly tested in the wild. Use at your own risk!
 
 ## Features
 
@@ -12,7 +14,7 @@ address. The client must be IPv6 capable.
 ## CLI Usage
 
 ```bash
-
+./soxprox.py -vv --interface-ipv4=eth0 --scope-ipv4=private
 ```
 
 ## Installation
